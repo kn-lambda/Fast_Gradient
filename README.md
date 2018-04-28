@@ -1,6 +1,6 @@
 # Fast_Gradient
 
-Generate adversarial images of Deep Learning. 
+Generate adversarial images of Deep Learning.  
 Fast Gradient Sign methds are used.
 
 
