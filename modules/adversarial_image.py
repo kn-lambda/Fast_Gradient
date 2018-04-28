@@ -1,40 +1,34 @@
 import os
-import sys
 
 import chainer
 import chainer.functions as F
 import chainer.links as L
 from chainer import Variable
 from chainer import cuda
-#from chainer.links import caffe as C
 
 import numpy as np
 from PIL import Image
 from numpy import random
-import subprocess
-import datetime
 
-
-#do not train built in models
+#stop drop-out
 chainer.config.train = False
 
 
-#use GPU if possible
-uses_device = 0
+##################################################################
+# for one adversarial image ######################################
 
-if uses_device >= 0:
-    chainer.cuda.get_device_from_id(0).use()
-    chainer.cuda.check_cuda_available()
-    import cupy as cp
-else:
-    cp = np
-
-
-
-
-#for one adversarial image
 class AdvImage(object):
-    
+    """
+    This object performs adversarial attack to one image.
+      original image    : Image Net
+      Neural Net models : VGG16, GoogLeNet, ResNet152
+      Attack methods    : (iterative) fast gradient sign methods
+
+    """
+
+    uses_device = None
+    xp = None
+
     model_name = None
     model = None
     size = None
@@ -42,17 +36,38 @@ class AdvImage(object):
     last_layer = None
     
     
-    def __init__(self, image_path, image_index):
+    def __init__(self, image_path, image_index, uses_device=0):
+        """
+        Set an original image and index.
+        """
         self.path = image_path
         self.index = image_index
         self.ORG_image = Image.open(image_path).convert('RGB')
-        self.org_image = None
+        self.org_image = None # resized image
         self.target = None
-        self.adv_image = None
+        self.adv_image = None # adversarial image
         
         
     @classmethod
-    def set_model(cls, model_name):       
+    def set_model(cls, model_name, uses_device=0):
+        """
+        Set model and device.
+          uses_device = -1 : CPU
+          uses_device >= 0 : GPU (default 0)
+        """
+        # use gpu or cpu
+        cls.uses_device = uses_device
+        
+        if uses_device >= 0:
+            chainer.cuda.get_device_from_id(uses_device).use()
+            chainer.cuda.check_cuda_available()
+            import cupy as xp
+        else:
+            xp = np
+
+        cls.xp = xp
+
+        # set model
         cls.model_name = model_name
         
         if model_name == "VGG16":
@@ -77,14 +92,17 @@ class AdvImage(object):
             raise Exception("Invalid model")
             
         if uses_device >= 0:
-            cls.model.to_gpu(0)
+            cls.model.to_gpu()
 
-        #for memory consumption ??    
+        #for memory saving
         for param in cls.model.params():
             param._requires_grad = False
 
-                
+
     def set_state(self):
+        """
+        Set a variable which correspnds to the adversarial image.
+        """
         if AdvImage.model is None:
             raise Exception("model is not set")
         
@@ -95,23 +113,34 @@ class AdvImage(object):
             self.adv_image = self._restore_image(self.target)
         else:
             self.target = self._prepare_variable(self.adv_image)
-            
+
     
     def reset_state(self):
+        """
+        Reset the adversarial image and the corresponding variable.
+        """
         self.target = self._prepare_variable(self.org_image)
         self.adv_image = self._restore_image(self.target)
         
         
-    def _prepare_variable(self, image): # image must be resized brforehand
-        arr = cp.array(image, dtype=cp.float32) # image should be copied (to gpu)
+    def _prepare_variable(self, image):
+        """
+        Convert PIL.Image to chainer.variable.
+        """
+        # image must be resized before fed into this method
+        xp = AdvImage.xp
+        arr = xp.array(image, dtype=xp.float32) # image should be copied (to gpu)
         arr = arr[:, :, ::-1]
-        arr -= cp.array(AdvImage.mean, dtype=cp.float32)
+        arr -= xp.array(AdvImage.mean, dtype=xp.float32)
         arr = arr.transpose((2, 0, 1))
         arr = arr.reshape((1,) + arr.shape)
         return Variable(arr)
         
         
     def _restore_image(self, target):
+        """
+        Convert chainer.variable to PIL.Image.
+        """
         arr = target.data[0].copy() # vaiable.data should be copied (to cpu)
         arr = cuda.to_cpu(arr)
         arr = arr.transpose((1, 2, 0))
@@ -127,10 +156,12 @@ class AdvImage(object):
         file_name = "{0}.jpg".format(os.path.basename(self.path).split('.')[0])
         file_path = os.path.join(model_dir, file_name)
         image_obj.save(file_path)
-        
+
+
     def save_adv(self, dir_path):
         self._save_image(self.adv_image, dir_path, AdvImage.model_name) 
-        
+
+
     def save_org(self, dir_path):
         self._save_image(self.org_image, dir_path, "Original") 
 
@@ -150,29 +181,31 @@ class AdvImage(object):
         return AdvImage._pred(self.adv_image)
 
     
-    # adversarial perturbations
+    ## adversarial attacks #####################
 
     def fast_gradient(self, eps):
+        xp = AdvImage.xp
         out_layer = AdvImage.last_layer
         x = AdvImage.model(self.target, layers=[out_layer])[out_layer]
-        t = cp.array([self.index], dtype=cp.int32)
+        t = xp.array([self.index], dtype=xp.int32)
         loss = F.softmax_cross_entropy(x, t)
         
         self.target.cleargrad()
         AdvImage.model.cleargrads()
         loss.backward()
         
-        perturb = cp.sign(self.target.grad)
+        perturb = xp.sign(self.target.grad)
         self.target = Variable(self.target.data + eps * perturb)
         self.adv_image = self._restore_image(self.target)
         
         
     def iterative_gradient(self, eps, alpha =1, n_iter = None):
+        xp = AdvImage.xp
         
         if n_iter is None:
             n_iter = int(min(eps + 4, 1.25 * eps))
         
-        t = cp.array([self.index], dtype=cp.int32)
+        t = xp.array([self.index], dtype=xp.int32)
         out_layer = AdvImage.last_layer
         target_org = self.target.data.copy()
         
@@ -184,15 +217,16 @@ class AdvImage(object):
             AdvImage.model.cleargrads()
             loss.backward()
             
-            perturb = cp.sign(self.target.grad)
+            perturb = xp.sign(self.target.grad)
             updated_data = self.target.data + alpha * perturb
-            clipped_data = cp.clip(updated_data, target_org - eps, target_org + eps)
+            clipped_data = xp.clip(updated_data, target_org - eps, target_org + eps)
             self.target = Variable(clipped_data)
         
         self.adv_image = self._restore_image(self.target)
         
         
     def iterative_least_likely(self, eps, alpha =1, n_iter = None, index = None):
+        xp = AdvImage.xp
         
         if n_iter is None:
             n_iter = int(min(eps + 4, 1.25 * eps))
@@ -201,7 +235,7 @@ class AdvImage(object):
             probs = AdvImage.model.predict([self.org_image], oversample=False).data[0]
             probs = cuda.to_cpu(probs)
             least_index = np.argmin(probs)
-            t = cp.array([least_index], dtype=cp.int32)
+            t = xp.array([least_index], dtype=xp.int32)
         
         out_layer = AdvImage.last_layer
         target_org = self.target.data.copy()
@@ -214,20 +248,30 @@ class AdvImage(object):
             AdvImage.model.cleargrads()
             loss.backward()
             
-            perturb = cp.sign(self.target.grad)
-            updated_data = self.target.data - alpha * perturb # '-' towads the input index
-            clipped_data = cp.clip(updated_data, target_org - eps, target_org + eps)
+            perturb = xp.sign(self.target.grad)
+            updated_data = self.target.data - alpha * perturb
+            clipped_data = xp.clip(updated_data, target_org - eps, target_org + eps)
             self.target = Variable(clipped_data)
         
         self.adv_image = self._restore_image(self.target)
 
 
+##################################################################
+# for list of adversarial images #################################
 
-
-#for list of adversarial images
 class AdvImageList(object):
+    """
+    This object performs adversarial attack to multiple images.
+    """
     
-    def __init__(self, image_paths, image_indices, model_name):
+    def __init__(self, image_paths, image_indices, model_name, uses_device=0):
+        """
+        Set original images and indices.
+        Also, set device:
+          uses_device = -1 : CPU
+          uses_device >= 0 : GPU (default 0)
+            
+        """
         
         if len(image_paths) != len(image_indices):
             raise Exception("length of paths and indices do not match")
@@ -235,8 +279,9 @@ class AdvImageList(object):
         self.image_paths = image_paths
         self.image_indices = image_indices
         self.length = len(image_indices)
+        self.uses_device = uses_device
         
-        AdvImage.set_model(model_name)
+        AdvImage.set_model(model_name, uses_device)
         
         self.adv_images = []
         for i in range(len(image_indices)):
@@ -273,22 +318,21 @@ class AdvImageList(object):
             print("{0} : ({1}, {2:.3f}) --> ({3}, {4:.3f})".format(self.image_indices[i],
                                                            self.org_preds[i], self.org_probs[i],
                                                            self.adv_preds[i], self.adv_probs[i]))
-             
+
     def change_model(self, model_name):
-        AdvImage.set_model(model_name)
+        AdvImage.set_model(model_name, self.uses_device)
         for x in self.adv_images:
             x.set_state()
         self.pred()
         
-             
-             
+                          
     def reset_state(self):
         for x in self.adv_images:
             x.reset_state()
         self.pred()
          
          
-    #adversarial perturations
+    ## adversarial attacks #########################
     
     def fast_gradient(self, eps):
         for x in self.adv_images:
@@ -306,5 +350,4 @@ class AdvImageList(object):
         for x in self.adv_images:
             x.iterative_least_likely(eps, alpha = alpha, n_iter = n_iter, index = index)
         self.pred()
-
 

@@ -1,7 +1,11 @@
 # Fast_Gradient
 
-Generate adversarial images of Deep Learning.  
-For VGG16, GoogLeNet and ResNet16 in chainer.  
+Generate adversarial images of Deep Learning. 
+Fast Gradient Sign methds are used.
+
+
+## models
+VGG16, GoogLeNet and ResNet16 in chainer
 
 
 #### References

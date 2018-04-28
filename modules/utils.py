@@ -8,20 +8,20 @@ import subprocess
 import datetime
 
 
-
+#########################################################
+# parameters ############################################
 
 #directory of the ImageNet image files
 #sub-directories must correspond to the categories
 IMAGE_DIR = "/home/kouichi/Data/Imagenet/images"
 
 
-
+#########################################################
+# functions #############################################
 
 def execute(cmd_str):
     cmd = cmd_str.split(' ')
     return subprocess.check_call(cmd)
-
-
 
 
 def get_images_in_dir(dir_path, index=None):
@@ -44,8 +44,6 @@ def get_images_in_dir(dir_path, index=None):
     return image_paths, image_indices
 
 
-
-
 def sampling_categories(index_list, n_samples = 20, index_must = []):
     
     remain_index = [i for i in index_list if i not in index_must]
@@ -55,8 +53,6 @@ def sampling_categories(index_list, n_samples = 20, index_must = []):
     index_samples = sorted(index_must + remain_index[:n_remain])
     
     return index_samples
-
-
 
 
 def sampling_images(index_samples, n_pics, index_dirname):
